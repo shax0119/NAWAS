@@ -27,6 +27,15 @@
     --purple:#a78bfa;
     --red:#e5675f;
   }
+  [data-theme="light"]{
+    --bg:#f4f5f7;
+    --panel:#ffffff;
+    --panel2:#f0f2f5;
+    --border:#dde1e7;
+    --text:#1a1f26;
+    --muted:#68707a;
+    --muted2:#a3aab3;
+  }
   *{box-sizing:border-box;}
   body{
     margin:0;
@@ -188,6 +197,15 @@
 </head>
 <body>
 
+<div id="lockOverlay" style="position:fixed;inset:0;background:var(--bg);z-index:9999;display:none;flex-direction:column;align-items:center;justify-content:center;padding:24px;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;">
+  <div style="font-size:2.4rem;margin-bottom:10px;">🔒</div>
+  <div id="lockTitle" style="font-weight:800;font-size:1rem;margin-bottom:18px;color:var(--text);text-align:center;">PIN kiriting</div>
+  <input id="lockInput" type="tel" inputmode="numeric" maxlength="4" autocomplete="off" style="width:160px;text-align:center;font-size:1.6rem;letter-spacing:14px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;color:var(--text);padding:12px 12px 12px 22px;margin-bottom:14px;font-family:inherit;">
+  <div id="lockError" style="color:var(--red);font-size:0.78rem;margin-bottom:10px;min-height:16px;"></div>
+  <button onclick="submitPin()" style="width:200px;padding:13px;border:none;border-radius:10px;background:var(--green);color:#062e1c;font-family:inherit;font-weight:800;font-size:0.85rem;cursor:pointer;">KIRISH</button>
+  <button id="forgotBtn" onclick="forgotPin()" style="margin-top:16px;background:none;border:none;color:var(--muted);font-size:0.72rem;text-decoration:underline;font-family:inherit;cursor:pointer;">PINni unutdim / o'chirish</button>
+</div>
+
 <div class="topline"></div>
 <header>
   <div class="brandbox">
@@ -197,7 +215,11 @@
       <div class="tag">ISHLAB CHIQARISH HISOBLAGICH</div>
     </div>
   </div>
-  <div class="date-pill" id="headerDate">—</div>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+    <button class="date-pill" style="padding:8px 11px;cursor:pointer;" onclick="toggleTheme()" id="themeToggle">🌙</button>
+    <button class="date-pill" style="padding:8px 11px;cursor:pointer;" onclick="changePin()">🔑</button>
+    <div class="date-pill" id="headerDate">—</div>
+  </div>
 </header>
 
 <div class="tabbar">
@@ -283,7 +305,13 @@
 <script>
 const monthNames = ["Yanvar","Fevral","Mart","Aprel","May","Iyun","Iyul","Avgust","Sentabr","Oktabr","Noyabr","Dekabr"];
 let today = new Date();
-let todayKey = today.toISOString().slice(0,10);
+function localDateKey(d){
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+let todayKey = localDateKey(today);
 let entries = [];
 let viewMonth = today.getMonth();
 let viewYear = today.getFullYear();
@@ -299,6 +327,118 @@ document.getElementById('todayShortTemir').textContent = todayLbl;
 document.getElementById('todayShortAlumin').textContent = todayLbl;
 document.getElementById('todayShortFlat').textContent = todayLbl;
 
+/* ---------- STORAGE (works inside Claude artifact AND as standalone PWA/APK) ---------- */
+const hasCloudStorage = typeof window.storage !== 'undefined';
+
+async function kvGet(key){
+  try{
+    if(hasCloudStorage){
+      const r = await window.storage.get(key, false);
+      return r && r.value ? r.value : null;
+    }
+    return localStorage.getItem(key);
+  }catch(e){ return null; }
+}
+async function kvSet(key, val){
+  try{
+    if(hasCloudStorage){ await window.storage.set(key, val, false); }
+    else{ localStorage.setItem(key, val); }
+  }catch(e){}
+}
+async function kvDelete(key){
+  try{
+    if(hasCloudStorage){ await window.storage.delete(key, false); }
+    else{ localStorage.removeItem(key); }
+  }catch(e){}
+}
+
+/* ---------- THEME (light/dark) ---------- */
+function applyTheme(t){
+  if(t==='light'){ document.documentElement.setAttribute('data-theme','light'); }
+  else{ document.documentElement.removeAttribute('data-theme'); }
+  document.getElementById('themeToggle').textContent = t==='light' ? '🌙' : '☀️';
+}
+async function loadTheme(){
+  const t = await kvGet('nawas-theme') || 'dark';
+  applyTheme(t);
+}
+async function toggleTheme(){
+  const current = document.documentElement.getAttribute('data-theme')==='light' ? 'light' : 'dark';
+  const next = current==='dark' ? 'light' : 'dark';
+  applyTheme(next);
+  await kvSet('nawas-theme', next);
+}
+
+/* ---------- PIN LOCK ---------- */
+let storedPin = null;
+let pinStage = 'enter';
+let tempPin = '';
+
+async function initLock(){
+  storedPin = await kvGet('nawas-pin');
+  const overlay = document.getElementById('lockOverlay');
+  const input = document.getElementById('lockInput');
+  const err = document.getElementById('lockError');
+  input.value=''; err.textContent='';
+  if(storedPin){
+    pinStage='enter';
+    document.getElementById('lockTitle').textContent = 'PIN kiriting';
+  } else {
+    pinStage='create';
+    document.getElementById('lockTitle').textContent = "Yangi PIN o'rnating (4 xona)";
+  }
+  overlay.style.display='flex';
+  input.focus();
+}
+
+async function submitPin(){
+  const input = document.getElementById('lockInput');
+  const val = input.value.trim();
+  const errEl = document.getElementById('lockError');
+  if(val.length!==4){ errEl.textContent="4 ta raqam kiriting"; return; }
+  if(pinStage==='enter'){
+    if(val===storedPin){
+      document.getElementById('lockOverlay').style.display='none';
+    } else {
+      errEl.textContent="PIN noto'g'ri, qayta urinib ko'ring";
+      input.value='';
+    }
+  } else if(pinStage==='create'){
+    tempPin = val;
+    pinStage='confirm';
+    document.getElementById('lockTitle').textContent="PINni tasdiqlang";
+    input.value=''; errEl.textContent='';
+  } else if(pinStage==='confirm'){
+    if(val===tempPin){
+      await kvSet('nawas-pin', val);
+      document.getElementById('lockOverlay').style.display='none';
+    } else {
+      errEl.textContent="Mos kelmadi, qaytadan kiriting";
+      pinStage='create';
+      document.getElementById('lockTitle').textContent="Yangi PIN o'rnating (4 xona)";
+      input.value='';
+    }
+  }
+}
+
+async function forgotPin(){
+  if(confirm("PIN o'chiriladi va qulf vaqtincha ochiladi. Davom etasizmi?")){
+    await kvDelete('nawas-pin');
+    document.getElementById('lockOverlay').style.display='none';
+  }
+}
+
+async function changePin(){
+  if(confirm("PINni o'zgartirmoqchimisiz? Joriy PIN o'chadi va yangisini o'rnatasiz.")){
+    await kvDelete('nawas-pin');
+    initLock();
+  }
+}
+
+document.getElementById('lockInput').addEventListener('keydown', function(e){
+  if(e.key==='Enter') submitPin();
+});
+
 function switchTab(name){
   document.getElementById('panelDaily').classList.toggle('active', name==='daily');
   document.getElementById('panelMonthly').classList.toggle('active', name==='monthly');
@@ -306,9 +446,6 @@ function switchTab(name){
   document.getElementById('tabBtnMonthly').classList.toggle('active', name==='monthly');
   if(name==='monthly') renderMonthly();
 }
-
-/* ---------- STORAGE (works inside Claude artifact AND as standalone PWA/APK) ---------- */
-const hasCloudStorage = typeof window.storage !== 'undefined';
 
 async function loadEntries(){
   if(hasCloudStorage){
@@ -486,6 +623,8 @@ function refreshAll(){
 }
 
 (async function init(){
+  await initLock();
+  await loadTheme();
   await loadEntries();
   refreshAll();
 })();
